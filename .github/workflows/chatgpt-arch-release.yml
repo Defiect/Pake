@@ -68,6 +68,7 @@ jobs:
 
           node dist/cli.js "https://chatgpt.com/" \
             --name "chatgpt" \
+            --identifier "com.pake.chatgpt" \
             --icon "src-tauri/png/chatgpt_512.png" \
             --new-window \
             --targets appimage
