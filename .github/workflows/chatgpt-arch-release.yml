@@ -1,0 +1,204 @@
+name: Release ChatGPT Arch Package
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - README_CN.md
+  workflow_dispatch:
+
+env:
+  NODE_VERSION: "22"
+  PNPM_VERSION: "10.26.2"
+  PACKAGE_NAME: pake-chatgpt-bin
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  prepare-release:
+    name: Prepare ChatGPT release metadata
+    runs-on: ubuntu-latest
+    outputs:
+      package_version: ${{ steps.version.outputs.package_version }}
+      release_tag: ${{ steps.release.outputs.release_tag }}
+      release_name: ${{ steps.release.outputs.release_name }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Read package version
+        id: version
+        run: echo "package_version=$(jq -r '.version' src-tauri/tauri.conf.json)" >> "$GITHUB_OUTPUT"
+
+      - name: Prepare release metadata
+        id: release
+        run: |
+          VERSION="${{ steps.version.outputs.package_version }}"
+          TAG="chatgpt-arch-v${VERSION}-${{ github.run_number }}"
+          echo "release_tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "release_name=ChatGPT Arch package v${VERSION} (${{ github.run_number }})" >> "$GITHUB_OUTPUT"
+
+  build-chatgpt-appimage:
+    name: Build ChatGPT AppImage
+    needs: prepare-release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Setup build environment
+        uses: ./.github/actions/setup-env
+        with:
+          mode: build
+
+      - name: Setup mold linker
+        uses: rui314/setup-mold@v1
+
+      - name: Build CLI
+        run: pnpm run cli:build
+
+      - name: Build ChatGPT AppImage
+        run: |
+          VERSION="${{ needs.prepare-release.outputs.package_version }}"
+
+          node dist/cli.js "https://chatgpt.com/" \
+            --name "chatgpt" \
+            --icon "src-tauri/png/chatgpt_512.png" \
+            --new-window \
+            --targets appimage
+
+          mkdir -p output/linux
+
+          if [ -f "chatgpt.AppImage" ]; then
+            mv "chatgpt.AppImage" "output/linux/ChatGPT-${VERSION}-x86_64.AppImage"
+          elif [ -n "$(ls src-tauri/target/release/bundle/appimage/*.AppImage 2>/dev/null)" ]; then
+            mv src-tauri/target/release/bundle/appimage/*.AppImage "output/linux/ChatGPT-${VERSION}-x86_64.AppImage"
+          else
+            echo "Error: No AppImage file found"
+            find . -name "*.AppImage" -type f
+            exit 1
+          fi
+
+          cp src-tauri/png/chatgpt_512.png output/linux/pake-chatgpt-bin.png
+
+      - name: Upload ChatGPT AppImage artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: chatgpt-appimage
+          path: output/linux/*
+          retention-days: 3
+
+  build-chatgpt-arch-package:
+    name: Package ChatGPT for Arch/CachyOS
+    needs: [prepare-release, build-chatgpt-appimage]
+    runs-on: ubuntu-latest
+    container:
+      image: archlinux:latest
+    steps:
+      - name: Download ChatGPT AppImage artifact
+        uses: actions/download-artifact@v7
+        with:
+          name: chatgpt-appimage
+          path: /tmp/chatgpt-appimage
+
+      - name: Install Arch packaging dependencies
+        shell: bash
+        run: |
+          pacman -Syu --noconfirm --needed base-devel
+
+      - name: Create Arch package sources
+        shell: bash
+        run: |
+          VERSION="${{ needs.prepare-release.outputs.package_version }}"
+
+          mkdir -p /tmp/pake-chatgpt-bin
+          cp "/tmp/chatgpt-appimage/ChatGPT-${VERSION}-x86_64.AppImage" /tmp/pake-chatgpt-bin/ChatGPT.AppImage
+          cp /tmp/chatgpt-appimage/pake-chatgpt-bin.png /tmp/pake-chatgpt-bin/pake-chatgpt-bin.png
+
+          cat > /tmp/pake-chatgpt-bin/pake-chatgpt-bin.sh <<'EOF'
+          #!/bin/sh
+          # Run without requiring FUSE by extracting the AppImage on launch.
+          exec /opt/pake-chatgpt-bin/ChatGPT.AppImage --appimage-extract-and-run "$@"
+          EOF
+
+          cat > /tmp/pake-chatgpt-bin/pake-chatgpt-bin.desktop <<'EOF'
+          [Desktop Entry]
+          Type=Application
+          Version=1.0
+          Name=ChatGPT
+          Comment=ChatGPT desktop app packaged by Pake
+          Exec=/usr/bin/pake-chatgpt-bin %U
+          Icon=pake-chatgpt-bin
+          Terminal=false
+          Categories=Network;Chat;
+          StartupWMClass=ChatGPT
+          MimeType=x-scheme-handler/http;x-scheme-handler/https;
+          EOF
+
+          APPIMAGE_SUM="$(sha256sum /tmp/pake-chatgpt-bin/ChatGPT.AppImage | awk '{print $1}')"
+          ICON_SUM="$(sha256sum /tmp/pake-chatgpt-bin/pake-chatgpt-bin.png | awk '{print $1}')"
+          DESKTOP_SUM="$(sha256sum /tmp/pake-chatgpt-bin/pake-chatgpt-bin.desktop | awk '{print $1}')"
+          WRAPPER_SUM="$(sha256sum /tmp/pake-chatgpt-bin/pake-chatgpt-bin.sh | awk '{print $1}')"
+
+          cat > /tmp/pake-chatgpt-bin/PKGBUILD <<EOF
+          pkgname=${PACKAGE_NAME}
+          pkgver=${VERSION}
+          pkgrel=1
+          pkgdesc="Prebuilt ChatGPT desktop app packaged by Pake"
+          arch=('x86_64')
+          url='https://github.com/${{ github.repository }}'
+          license=('MIT')
+          depends=('bash')
+          optdepends=('fuse2: optional for native AppImage mounting')
+          provides=('pake-chatgpt')
+          conflicts=('pake-chatgpt')
+          options=('!strip')
+          source=('ChatGPT.AppImage' 'pake-chatgpt-bin.png' 'pake-chatgpt-bin.desktop' 'pake-chatgpt-bin.sh')
+          sha256sums=('${APPIMAGE_SUM}' '${ICON_SUM}' '${DESKTOP_SUM}' '${WRAPPER_SUM}')
+
+          package() {
+            install -Dm755 "\${srcdir}/ChatGPT.AppImage" "\${pkgdir}/opt/pake-chatgpt-bin/ChatGPT.AppImage"
+            install -Dm755 "\${srcdir}/pake-chatgpt-bin.sh" "\${pkgdir}/usr/bin/pake-chatgpt-bin"
+            install -Dm644 "\${srcdir}/pake-chatgpt-bin.desktop" "\${pkgdir}/usr/share/applications/pake-chatgpt-bin.desktop"
+            install -Dm644 "\${srcdir}/pake-chatgpt-bin.png" "\${pkgdir}/usr/share/icons/hicolor/512x512/apps/pake-chatgpt-bin.png"
+          }
+          EOF
+
+      - name: Build Arch package
+        shell: bash
+        run: |
+          useradd --create-home builder
+          chown -R builder:builder /tmp/pake-chatgpt-bin
+          su builder -c "cd /tmp/pake-chatgpt-bin && makepkg --printsrcinfo > .SRCINFO && makepkg -f --noconfirm"
+
+      - name: Collect Arch package artifacts
+        shell: bash
+        run: |
+          mkdir -p output/arch
+          cp /tmp/pake-chatgpt-bin/*.pkg.tar.zst output/arch/
+          cp /tmp/pake-chatgpt-bin/PKGBUILD output/arch/
+          cp /tmp/pake-chatgpt-bin/.SRCINFO output/arch/
+
+      - name: Upload Arch package artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: chatgpt-arch-package
+          path: |
+            output/arch/*.pkg.tar.zst
+            output/arch/PKGBUILD
+            output/arch/.SRCINFO
+          retention-days: 3
+
+      - name: Upload ChatGPT Arch release files
+        uses: ncipollo/release-action@v1
+        with:
+          artifacts: output/arch/*.pkg.tar.zst,output/arch/PKGBUILD,output/arch/.SRCINFO
+          body: Automated Arch/CachyOS-friendly ChatGPT pacman package built from Pake.
+          name: ${{ needs.prepare-release.outputs.release_name }}
+          tag: ${{ needs.prepare-release.outputs.release_tag }}
+          token: ${{ secrets.GITHUB_TOKEN }}
