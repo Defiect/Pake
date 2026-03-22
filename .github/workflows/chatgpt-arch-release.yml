@@ -131,6 +131,7 @@ jobs:
 
           cat > /tmp/pake-chatgpt-bin/pake-chatgpt-bin.sh <<'EOF'
           #!/bin/sh
+          # Run without requiring FUSE by extracting the AppImage on launch.
           exec /opt/pake-chatgpt-bin/ChatGPT.AppImage --appimage-extract-and-run "$@"
           EOF
 
