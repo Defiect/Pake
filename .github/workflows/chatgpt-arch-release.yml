@@ -149,6 +149,11 @@ jobs:
           MimeType=x-scheme-handler/http;x-scheme-handler/https;
           EOF
 
+          APPIMAGE_SUM="$(sha256sum /tmp/pake-chatgpt-bin/ChatGPT.AppImage | awk '{print $1}')"
+          ICON_SUM="$(sha256sum /tmp/pake-chatgpt-bin/pake-chatgpt-bin.png | awk '{print $1}')"
+          DESKTOP_SUM="$(sha256sum /tmp/pake-chatgpt-bin/pake-chatgpt-bin.desktop | awk '{print $1}')"
+          WRAPPER_SUM="$(sha256sum /tmp/pake-chatgpt-bin/pake-chatgpt-bin.sh | awk '{print $1}')"
+
           cat > /tmp/pake-chatgpt-bin/PKGBUILD <<EOF
           pkgname=${PACKAGE_NAME}
           pkgver=${VERSION}
@@ -163,7 +168,7 @@ jobs:
           conflicts=('pake-chatgpt')
           options=('!strip')
           source=('ChatGPT.AppImage' 'pake-chatgpt-bin.png' 'pake-chatgpt-bin.desktop' 'pake-chatgpt-bin.sh')
-          sha256sums=('SKIP' 'SKIP' 'SKIP' 'SKIP')
+          sha256sums=('${APPIMAGE_SUM}' '${ICON_SUM}' '${DESKTOP_SUM}' '${WRAPPER_SUM}')
 
           package() {
             install -Dm755 "\${srcdir}/ChatGPT.AppImage" "\${pkgdir}/opt/pake-chatgpt-bin/ChatGPT.AppImage"
@@ -178,7 +183,7 @@ jobs:
         run: |
           useradd --create-home builder
           chown -R builder:builder /tmp/pake-chatgpt-bin
-          su builder -c "cd /tmp/pake-chatgpt-bin && makepkg --printsrcinfo > .SRCINFO && makepkg -f --nodeps --noconfirm"
+          su builder -c "cd /tmp/pake-chatgpt-bin && makepkg --printsrcinfo > .SRCINFO && makepkg -f --noconfirm"
 
       - name: Collect Arch package artifacts
         shell: bash
